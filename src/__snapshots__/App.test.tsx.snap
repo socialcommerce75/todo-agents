@@ -1,0 +1,63 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`App > matches the snapshot when empty 1`] = `
+<div>
+  <main>
+    <h1>
+      To-do list
+    </h1>
+    <form>
+      <input
+        aria-label="New to-do"
+        placeholder="What needs doing?"
+        value=""
+      />
+      <button
+        type="submit"
+      >
+        Add
+      </button>
+    </form>
+    <ul />
+  </main>
+</div>
+`;
+
+exports[`App > matches the snapshot with a to-do 1`] = `
+<div>
+  <main>
+    <h1>
+      To-do list
+    </h1>
+    <form>
+      <input
+        aria-label="New to-do"
+        placeholder="What needs doing?"
+        value=""
+      />
+      <button
+        type="submit"
+      >
+        Add
+      </button>
+    </form>
+    <ul>
+      <li>
+        <label>
+          <input
+            type="checkbox"
+          />
+          <span
+            style="text-decoration: none;"
+          >
+            Buy milk
+          </span>
+        </label>
+        <button>
+          Delete
+        </button>
+      </li>
+    </ul>
+  </main>
+</div>
+`;
