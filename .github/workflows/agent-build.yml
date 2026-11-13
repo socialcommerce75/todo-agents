@@ -1,0 +1,118 @@
+# Builder agent. Started by the Jira trigger (Step 7) or by the feedback loop (Step 6).
+name: agent-build
+on:
+  workflow_dispatch:
+    inputs:
+      ticket:
+        description: Jira key, for example TODO-12
+        required: true
+      kind:
+        description: feature, bug or investigation
+        required: true
+        default: feature
+      agent:
+        description: Builder name from agents.yaml
+        required: true
+      pr:
+        description: PR number when fixing feedback (empty for a new task)
+        required: false
+      feedback:
+        description: Feedback to fix (empty for a new task)
+        required: false
+permissions:
+  contents: write
+  pull-requests: write
+concurrency:
+  group: builder-${{ inputs.agent }}
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      TICKET: ${{ inputs.ticket }}
+      KIND: ${{ inputs.kind }}
+      AGENT: ${{ inputs.agent }}
+      PR: ${{ inputs.pr }}
+      FEEDBACK: ${{ inputs.feedback }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      GH_TOKEN: ${{ secrets.BOT_PAT }}
+      JIRA_SITE: ${{ secrets.JIRA_SITE }}
+      JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+      JIRA_TOKEN: ${{ secrets.JIRA_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.BOT_PAT }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Prepare the branch and the task file
+        run: |
+          git config user.name "$AGENT"
+          git config user.email "poc-ship-bot@users.noreply.github.com"
+          BRANCH="agent/$TICKET"
+          echo "BRANCH=$BRANCH" >> "$GITHUB_ENV"
+          FOCUS=$(yq ".builders[] | select(.name == \"$AGENT\") | .focus" agents.yaml)
+          if [ -n "$PR" ]; then
+            git checkout "$BRANCH"
+            {
+              echo "Agent: $AGENT ($FOCUS)"; echo "Kind: $KIND"; echo
+              echo "Fix the feedback on pull request #$PR. Read the PR comments with: gh pr view $PR --comments"
+              echo "Read inline comments with: gh api repos/$GITHUB_REPOSITORY/pulls/$PR/comments"
+              echo; echo "$FEEDBACK"
+            } > TASK.md
+          else
+            git checkout -B "$BRANCH" origin/main
+            TEXT=$(./scripts/jira.sh get "$TICKET")
+            echo "SUMMARY=$(echo "$TEXT" | head -n1)" >> "$GITHUB_ENV"
+            { echo "Agent: $AGENT ($FOCUS)"; echo "Kind: $KIND"; echo; echo "$TEXT"; } > TASK.md
+            ./scripts/jira.sh comment "$TICKET" "$AGENT started ($KIND): $RUN_URL" || true
+          fi
+          printf 'TASK.md\nFINDINGS.md\n' >> .git/info/exclude
+      - run: npm ci
+      - uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ secrets.BOT_PAT }}
+          prompt: |
+            You are a Builder agent. Your name, focus, job type and task are in TASK.md. Follow CLAUDE.md, including the rules for your job type.
+            For a feature or a bug: implement it, run npm run lint, npm test and npm run build, and fix until all three pass. Then commit with git add and git commit (message: the ticket key, a colon, a short summary). Do not push.
+            For an investigation: change no source files, write FINDINGS.md, and do not commit.
+          claude_args: --max-turns 40 --allowedTools "Read,Edit,Write,Glob,Grep,Bash(npm:*),Bash(git add:*),Bash(git commit:*),Bash(git status:*),Bash(git diff:*),Bash(gh pr view:*),Bash(gh api:*),Bash(gh run view:*)"
+      - name: Post the findings (investigation only)
+        if: env.KIND == 'investigation'
+        run: |
+          [ -f FINDINGS.md ] || { ./scripts/jira.sh comment "$TICKET" "$AGENT found nothing to report."; exit 1; }
+          ./scripts/jira.sh comment "$TICKET" "Findings from $AGENT:"$'\n\n'"$(cat FINDINGS.md)"
+      - name: Verify independently
+        if: env.KIND != 'investigation'
+        run: |
+          npm run lint
+          npm test
+          npm run build
+          git diff --quiet origin/main...HEAD && { echo 'No changes were made'; exit 1; }
+          if git diff --name-only origin/main...HEAD | grep -E '^(\.github/|\.claude/)|^(agents\.yaml|risk-tiers\.yaml|REVIEW\.md|CLAUDE\.md)$'; then
+            echo 'A protected file changed'; exit 1
+          fi
+          if git diff --name-only --diff-filter=MD origin/main...HEAD | grep -E '\.test\.tsx?$'; then
+            echo 'An existing test changed'; exit 1
+          fi
+      - name: Push, then open or update the pull request
+        if: env.KIND != 'investigation'
+        run: |
+          git push --force origin "$BRANCH"
+          if ! gh pr view "$BRANCH" > /dev/null 2>&1; then
+            gh label create "builder:$AGENT" --force > /dev/null
+            gh label create "kind:$KIND" --force > /dev/null
+            gh pr create --base main --head "$BRANCH" --title "$TICKET: $SUMMARY" \
+              --body "$(printf 'Jira: %s/browse/%s\nBuilt by %s.' "$JIRA_SITE" "$TICKET" "$AGENT")" \
+              --label "builder:$AGENT" --label "kind:$KIND"
+          fi
+          URL=$(gh pr view "$BRANCH" --json url -q .url)
+          ./scripts/jira.sh comment "$TICKET" "$AGENT pushed changes: $URL" || true
+      - name: Report failure to Jira
+        if: failure()
+        run: ./scripts/jira.sh comment "$TICKET" "$AGENT failed. See the run: $RUN_URL" || true
