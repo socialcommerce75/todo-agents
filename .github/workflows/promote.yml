@@ -3,20 +3,30 @@ on:
   workflow_dispatch:
     inputs:
       target:
-        description: Where to deploy main
+        description: Where to deploy
         type: choice
         options: [sandbox, production]
         required: true
+      ref:
+        description: Commit to deploy (leave empty for the latest main)
+        required: false
 permissions:
-  contents: read
+  contents: write
 jobs:
   promote:
     runs-on: ubuntu-latest
     environment: ${{ inputs.target }}
+    env:
+      TARGET: ${{ inputs.target }}
+      PROJECT: ${{ inputs.target == 'production' && vars.PAGES_PRODUCTION || vars.PAGES_SANDBOX }}
+      JIRA_SITE: ${{ secrets.JIRA_SITE }}
+      JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+      JIRA_TOKEN: ${{ secrets.JIRA_TOKEN }}
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: main
+          ref: ${{ inputs.ref || 'main' }}
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -28,3 +38,13 @@ jobs:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           command: pages deploy dist --project-name=${{ inputs.target == 'production' && vars.PAGES_PRODUCTION || vars.PAGES_SANDBOX }} --branch=main
+      - name: Tell Jira which tickets went out
+        run: |
+          TAG="deployed-$TARGET"
+          git fetch --tags --force
+          if git rev-parse -q --verify "refs/tags/$TAG" > /dev/null; then RANGE="$TAG..HEAD"; else RANGE="HEAD"; fi
+          for t in $(git log $RANGE --format=%s | grep -oE 'TODO-[0-9]+' | sort -u); do
+            ./scripts/jira.sh comment "$t" "Promoted to $TARGET: https://$PROJECT.pages.dev" || true
+          done
+          git tag -f "$TAG" HEAD
+          git push -f origin "$TAG"
