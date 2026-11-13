@@ -116,4 +116,5 @@ jobs:
           ./scripts/jira.sh comment "$TICKET" "$AGENT pushed changes: $URL" || true
       - name: Report failure to Jira
         if: failure()
-        run: ./scripts/jira.sh comment "$TICKET" "$AGENT failed. See the run: $RUN_URL" || true
+        run: |
+          ./scripts/jira.sh comment "$TICKET" "$AGENT failed. See the run: $RUN_URL" || true
