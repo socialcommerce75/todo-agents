@@ -12,6 +12,11 @@ exports[`App > matches the snapshot when empty 1`] = `
         placeholder="What needs doing?"
         value=""
       />
+      <input
+        aria-label="Due date"
+        type="date"
+        value=""
+      />
       <button
         type="submit"
       >
@@ -33,6 +38,11 @@ exports[`App > matches the snapshot with a to-do 1`] = `
       <input
         aria-label="New to-do"
         placeholder="What needs doing?"
+        value=""
+      />
+      <input
+        aria-label="Due date"
+        type="date"
         value=""
       />
       <button
