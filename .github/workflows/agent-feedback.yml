@@ -1,0 +1,37 @@
+# Sends a request-changes review back to the same builder.
+name: agent-feedback
+on:
+  pull_request_review:
+    types: [submitted]
+jobs:
+  fix:
+    if: >
+      startsWith(github.event.pull_request.head.ref, 'agent/') &&
+      github.event.review.state == 'changes_requested' &&
+      (github.event.review.user.login == 'poc-ship-principal' ||
+       github.event.review.user.login == github.repository_owner)
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.PRINCIPAL_PAT }}
+      PR: ${{ github.event.pull_request.number }}
+      BRANCH: ${{ github.event.pull_request.head.ref }}
+      REVIEW_BODY: ${{ github.event.review.body }}
+      JIRA_SITE: ${{ secrets.JIRA_SITE }}
+      JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+      JIRA_TOKEN: ${{ secrets.JIRA_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dispatch the builder, at most 3 rounds
+        run: |
+          TICKET="${BRANCH#agent/}"
+          AGENT=$(gh pr view "$PR" --json labels -q '[.labels[].name | select(startswith("builder:"))][0] // ""')
+          KIND=$(gh pr view "$PR" --json labels -q '[.labels[].name | select(startswith("kind:"))][0] // ""')
+          AGENT="${AGENT#builder:}"; KIND="${KIND#kind:}"
+          ROUNDS=$(gh pr view "$PR" --json comments -q '[.comments[] | select(.body | startswith("agent-fix-round"))] | length')
+          if [ "$ROUNDS" -ge 3 ]; then
+            gh pr comment "$PR" --body "agent-limit: 3 fix rounds used. Waiting for a human."
+            ./scripts/jira.sh comment "$TICKET" "Still not passing after 3 fix rounds. Your task: take over pull request $PR" || true
+            exit 0
+          fi
+          gh pr comment "$PR" --body "agent-fix-round $((ROUNDS + 1)): feedback sent to $AGENT."
+          gh workflow run agent-build.yml -f ticket="$TICKET" -f kind="${KIND:-feature}" -f agent="$AGENT" -f pr="$PR" -f feedback="$REVIEW_BODY"

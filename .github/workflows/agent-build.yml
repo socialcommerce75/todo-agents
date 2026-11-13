@@ -1,5 +1,6 @@
 # Builder agent. Started by the Jira trigger (Step 7) or by the feedback loop (Step 6).
 name: agent-build
+run-name: ${{ inputs.agent }} on ${{ inputs.ticket }}
 on:
   workflow_dispatch:
     inputs:

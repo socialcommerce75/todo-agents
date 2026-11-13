@@ -1,0 +1,36 @@
+# Sends a failed ci run back to the same builder.
+name: agent-ci-fix
+on:
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+jobs:
+  fix:
+    if: >
+      github.event.workflow_run.conclusion == 'failure' &&
+      startsWith(github.event.workflow_run.head_branch, 'agent/')
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.PRINCIPAL_PAT }}
+      BRANCH: ${{ github.event.workflow_run.head_branch }}
+      RUN_ID: ${{ github.event.workflow_run.id }}
+      JIRA_SITE: ${{ secrets.JIRA_SITE }}
+      JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+      JIRA_TOKEN: ${{ secrets.JIRA_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dispatch the builder, at most 3 rounds
+        run: |
+          TICKET="${BRANCH#agent/}"
+          PR=$(gh pr list --head "$BRANCH" --json number -q '.[0].number')
+          [ -n "$PR" ] || exit 0
+          AGENT=$(gh pr view "$PR" --json labels -q '[.labels[].name | select(startswith("builder:"))][0] // ""')
+          KIND=$(gh pr view "$PR" --json labels -q '[.labels[].name | select(startswith("kind:"))][0] // ""')
+          AGENT="${AGENT#builder:}"; KIND="${KIND#kind:}"
+          ROUNDS=$(gh pr view "$PR" --json comments -q '[.comments[] | select(.body | startswith("agent-fix-round"))] | length')
+          if [ "$ROUNDS" -ge 3 ]; then
+            ./scripts/jira.sh comment "$TICKET" "CI still failing after 3 fix rounds. Your task: take over pull request $PR" || true
+            exit 0
+          fi
+          gh pr comment "$PR" --body "agent-fix-round $((ROUNDS + 1)): ci failed, sent to $AGENT."
+          gh workflow run agent-build.yml -f ticket="$TICKET" -f kind="${KIND:-feature}" -f agent="$AGENT" -f pr="$PR" -f feedback="The ci check failed. Read the failing log with: gh run view $RUN_ID --log-failed"

@@ -1,0 +1,48 @@
+# Picks an idle builder for a Jira ticket and starts it. Called by the Jira rule.
+name: agent-dispatch
+on:
+  workflow_dispatch:
+    inputs:
+      ticket:
+        description: Jira key, for example TODO-12
+        required: true
+      issuetype:
+        description: Story, Bug or Investigation
+        required: true
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.PRINCIPAL_PAT }}
+      TICKET: ${{ inputs.ticket }}
+      TYPE: ${{ inputs.issuetype }}
+      JIRA_SITE: ${{ secrets.JIRA_SITE }}
+      JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+      JIRA_TOKEN: ${{ secrets.JIRA_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pick an idle builder and start it
+        run: |
+          case "$TYPE" in
+            Bug) KIND=bug ;;
+            Investigation) KIND=investigation ;;
+            *) KIND=feature ;;
+          esac
+          RUNNING=$( { gh run list --workflow agent-build.yml --status in_progress --json displayTitle -q '.[].displayTitle'; gh run list --workflow agent-build.yml --status queued --json displayTitle -q '.[].displayTitle'; } )
+          if echo "$RUNNING" | grep -q " on $TICKET$"; then
+            ./scripts/jira.sh comment "$TICKET" "A builder is already working on this ticket." || true
+            exit 0
+          fi
+          if [ -n "$(gh pr list --head "agent/$TICKET" --state open --json number -q '.[0].number')" ]; then
+            ./scripts/jira.sh comment "$TICKET" "A pull request is already open for this ticket. Give feedback on it in GitHub." || true
+            exit 0
+          fi
+          AGENT=""
+          for name in $(yq '.builders[].name' agents.yaml); do
+            if ! echo "$RUNNING" | grep -q "^$name on "; then AGENT="$name"; break; fi
+          done
+          if [ -z "$AGENT" ]; then
+            ./scripts/jira.sh comment "$TICKET" "All builders are busy. Click Send to agent again in a few minutes." || true
+            exit 0
+          fi
+          gh workflow run agent-build.yml -f ticket="$TICKET" -f kind="$KIND" -f agent="$AGENT"
