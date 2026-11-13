@@ -1,0 +1,36 @@
+name: deploy-staging
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - id: deploy
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy dist --project-name=${{ vars.PAGES_STAGING }} --branch=main
+      - name: Tell Jira
+        env:
+          JIRA_SITE: ${{ secrets.JIRA_SITE }}
+          JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+          JIRA_TOKEN: ${{ secrets.JIRA_TOKEN }}
+          URL: ${{ steps.deploy.outputs.pages-deployment-alias-url }}
+          MSG: ${{ github.event.head_commit.message }}
+        run: |
+          TICKET=$(echo "$MSG" | grep -oE 'TODO-[0-9]+' | head -1)
+          if [ -n "$TICKET" ]; then
+            ./scripts/jira.sh comment "$TICKET" "Merged and deployed to staging: $URL. Your task: test it, then promote." || true
+          fi

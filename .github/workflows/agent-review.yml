@@ -1,0 +1,81 @@
+# Reviewer agent. Runs on every PR from an agent/ branch. It advises; it never approves.
+name: agent-review
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+permissions:
+  contents: read
+  pull-requests: read
+concurrency:
+  group: review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+jobs:
+  review:
+    if: startsWith(github.head_ref, 'agent/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ secrets.PRINCIPAL_PAT }}
+      PR: ${{ github.event.pull_request.number }}
+      JIRA_SITE: ${{ secrets.JIRA_SITE }}
+      JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+      JIRA_TOKEN: ${{ secrets.JIRA_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Pick the reviewer and classify the risk
+        id: pick
+        run: |
+          REVIEWER=$(gh pr view "$PR" --json labels -q '[.labels[].name | select(startswith("reviewer:"))][0] // ""')
+          REVIEWER="${REVIEWER#reviewer:}"
+          if [ -z "$REVIEWER" ]; then
+            N=$(yq '.reviewers | length' agents.yaml)
+            REVIEWER=$(yq ".reviewers[$((PR % N))].name" agents.yaml)
+            gh label create "reviewer:$REVIEWER" --force > /dev/null
+            gh pr edit "$PR" --add-label "reviewer:$REVIEWER"
+          fi
+          FOCUS=$(yq ".reviewers[] | select(.name == \"$REVIEWER\") | .focus" agents.yaml)
+          matches() {
+            for p in $(yq ".$1[]" risk-tiers.yaml); do
+              prefix="${p%\*\*}"
+              [[ "$2" == "$prefix"* ]] && return 0
+            done
+            return 1
+          }
+          RISK=low
+          for f in $(gh pr diff "$PR" --name-only); do
+            if matches high "$f"; then RISK=high; break; fi
+            if ! matches low "$f"; then RISK=medium; fi
+          done
+          gh label create "risk:$RISK" --force > /dev/null
+          gh pr edit "$PR" --add-label "risk:$RISK"
+          { echo "reviewer=$REVIEWER"; echo "focus=$FOCUS"; echo "risk=$RISK"; } >> "$GITHUB_OUTPUT"
+      - uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ secrets.PRINCIPAL_PAT }}
+          prompt: |
+            You are ${{ steps.pick.outputs.reviewer }}, a Reviewer agent. Your focus is ${{ steps.pick.outputs.focus }}, but run every pass in REVIEW.md.
+            Review pull request ${{ github.event.pull_request.number }} using gh pr diff and gh pr view.
+            Write verdict.txt containing exactly PASS or FAIL.
+            Write review.md with each finding (file, line, the problem, and proof) and one paragraph on what you checked.
+          claude_args: --max-turns 15 --allowedTools "Read,Glob,Grep,Write,Bash(gh pr diff:*),Bash(gh pr view:*)"
+      - name: Post the review
+        env:
+          REVIEWER: ${{ steps.pick.outputs.reviewer }}
+          RISK: ${{ steps.pick.outputs.risk }}
+        run: |
+          TICKET="${GITHUB_HEAD_REF#agent/}"
+          URL=$(gh pr view "$PR" --json url -q .url)
+          V=$(head -n1 verdict.txt)
+          { echo "Reviewed by $REVIEWER. Risk: $RISK. Verdict: $V."; echo; cat review.md; } > out.md
+          if [ "$V" = PASS ]; then
+            gh pr review "$PR" --comment --body-file out.md
+            gh pr merge "$PR" --squash --auto
+            ./scripts/jira.sh comment "$TICKET" "$REVIEWER passed the review (risk $RISK). Your task: review and approve $URL" || true
+          else
+            gh pr review "$PR" --request-changes --body-file out.md
+            ./scripts/jira.sh comment "$TICKET" "$REVIEWER requested changes. The builder will fix them: $URL" || true
+          fi
