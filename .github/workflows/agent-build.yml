@@ -82,7 +82,7 @@ jobs:
             You are a Builder agent. Your name, focus, job type and task are in TASK.md. Follow CLAUDE.md, including the rules for your job type.
             For a feature or a bug: implement it, run npm run lint, npm test and npm run build, and fix until all three pass. Then commit with git add and git commit (message: the ticket key, a colon, a short summary). Do not push.
             For an investigation: change no source files, write FINDINGS.md, and do not commit.
-          claude_args: --max-turns 40 --allowedTools "Read,Edit,Write,Glob,Grep,Bash(npm:*),Bash(git add:*),Bash(git commit:*),Bash(git status:*),Bash(git diff:*),Bash(gh pr view:*),Bash(gh api:*),Bash(gh run view:*)"
+          claude_args: --max-turns 40 --allowedTools "Read,Edit,Write,Glob,Grep,Bash(npm:*),Bash(git add:*),Bash(git commit:*),Bash(git status:*),Bash(git diff:*),Bash(git fetch:*),Bash(git merge:*),Bash(git log:*),Bash(gh pr view:*),Bash(gh api:*),Bash(gh run view:*)"
       - name: Post the findings (investigation only)
         if: env.KIND == 'investigation'
         run: |

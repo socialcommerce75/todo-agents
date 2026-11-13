@@ -1,0 +1,46 @@
+# After every merge to main, send agent PRs that now conflict back to their builder.
+name: agent-conflicts
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.PRINCIPAL_PAT }}
+      JIRA_SITE: ${{ secrets.JIRA_SITE }}
+      JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+      JIRA_TOKEN: ${{ secrets.JIRA_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Send conflicting agent PRs back to their builder
+        run: |
+          echo "### Conflict check after merge to main" >> "$GITHUB_STEP_SUMMARY"
+          sleep 20
+          for PR in $(gh pr list --state open --json number,headRefName -q '.[] | select(.headRefName | startswith("agent/")) | .number'); do
+            STATE=UNKNOWN
+            for i in 1 2 3 4 5 6; do
+              STATE=$(gh pr view "$PR" --json mergeable -q .mergeable)
+              [ "$STATE" != UNKNOWN ] && break
+              sleep 10
+            done
+            echo "- PR #$PR: $STATE" >> "$GITHUB_STEP_SUMMARY"
+            [ "$STATE" = CONFLICTING ] || continue
+            BRANCH=$(gh pr view "$PR" --json headRefName -q .headRefName)
+            TICKET="${BRANCH#agent/}"
+            AGENT=$(gh pr view "$PR" --json labels -q '[.labels[].name | select(startswith("builder:"))][0] // ""')
+            KIND=$(gh pr view "$PR" --json labels -q '[.labels[].name | select(startswith("kind:"))][0] // ""')
+            AGENT="${AGENT#builder:}"; KIND="${KIND#kind:}"
+            ROUNDS=$(gh pr view "$PR" --json comments -q '[.comments[] | select(.body | startswith("agent-fix-round"))] | length')
+            if [ "$ROUNDS" -ge 3 ]; then
+              gh pr comment "$PR" --body "agent-limit: 3 fix rounds used and the branch still conflicts. Waiting for a human."
+              ./scripts/jira.sh comment "$TICKET" "Merge conflict and 3 fix rounds used. Your task: take over pull request $PR" || true
+              continue
+            fi
+            gh pr comment "$PR" --body "agent-fix-round $((ROUNDS + 1)): merge conflict with main, sent to $AGENT."
+            ./scripts/jira.sh comment "$TICKET" "Merge conflict with main. $AGENT is resolving it." || true
+            gh workflow run agent-build.yml -f ticket="$TICKET" -f kind="${KIND:-feature}" -f agent="$AGENT" -f pr="$PR" \
+              -f feedback="This pull request has a merge conflict with main. Run git fetch origin, then git merge origin/main. Resolve every conflict and keep the intent of both changes. If a snapshot file conflicts, resolve the source files first, then run npm test -- -u to regenerate it. Then run lint, tests and build, and commit the merge."
+          done
