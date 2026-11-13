@@ -1,0 +1,43 @@
+# Builds each PR and deploys it to its own Cloudflare Pages preview address.
+name: preview
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+permissions:
+  contents: read
+  pull-requests: write
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    env:
+      PR: ${{ github.event.pull_request.number }}
+      HEAD_REF: ${{ github.head_ref }}
+      JIRA_SITE: ${{ secrets.JIRA_SITE }}
+      JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+      JIRA_TOKEN: ${{ secrets.JIRA_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Deploy the preview
+        id: deploy
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy dist --project-name=${{ vars.PAGES_STAGING }} --branch=pr-${{ github.event.pull_request.number }}
+      - name: Comment the address on the PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          URL: ${{ steps.deploy.outputs.pages-deployment-alias-url }}
+        run: gh pr comment "$PR" --edit-last --create-if-none --body "Preview: $URL"
+      - name: Comment the address on the Jira ticket (agent PRs, first push only)
+        if: github.event.action == 'opened' && startsWith(github.head_ref, 'agent/')
+        env:
+          URL: ${{ steps.deploy.outputs.pages-deployment-alias-url }}
+        run: ./scripts/jira.sh comment "${HEAD_REF#agent/}" "Preview to try the change: $URL" || true
