@@ -1,0 +1,11 @@
+# Read by the Reviewer agent. One high-risk file makes the whole PR high risk.
+# Risk is shown as a label on each PR. High-risk files also need you as code owner (see CODEOWNERS).
+
+# Pipeline, policy and dependency files.
+high: ['.github/**', '.claude/**', 'package.json', 'package-lock.json', 'vite.config.ts', 'agents.yaml', 'risk-tiers.yaml', 'REVIEW.md', 'CLAUDE.md']
+
+# App code, assets and docs.
+low: ['src/**', 'public/**', 'docs/**']
+
+# Anything else.
+default: medium

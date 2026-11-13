@@ -1,0 +1,12 @@
+# Who the agents are. To add an agent, add a line here.
+# focus is passed to the agent as a hint about what it is best at.
+builders:
+  - name: Jason_Builder
+    focus: features and UI changes
+  - name: Maya_Builder
+    focus: bug fixes and tests
+reviewers:
+  - name: John_PR_Reviewer
+    focus: correctness and security
+  - name: Priya_PR_Reviewer
+    focus: accessibility, privacy and UX
